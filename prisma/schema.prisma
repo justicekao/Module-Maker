@@ -1,0 +1,220 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// --- Auth -------------------------------------------------------------
+
+model User {
+  id             String   @id @default(cuid())
+  name           String
+  email          String   @unique
+  hashedPassword String
+  image          String?
+  bio            String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  apiKeys       ApiKey[]
+  modules       Module[]
+  runs          Run[]
+  acquisitions  Acquisition[]
+  reviews       Review[]
+  membership    Membership?
+  stripeAccount SellerAccount?
+}
+
+// Encrypted, user-supplied "bring your own key" credentials for AI providers.
+model ApiKey {
+  id            String   @id @default(cuid())
+  userId        String
+  provider      AiProvider
+  label         String
+  encryptedKey  String
+  createdAt     DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider, label])
+  @@index([userId])
+}
+
+enum AiProvider {
+  OPENAI
+  ANTHROPIC
+  GOOGLE
+}
+
+// --- Marketplace membership & seller payouts ---------------------------
+
+model Membership {
+  id                   String           @id @default(cuid())
+  userId               String           @unique
+  tier                 MembershipTier   @default(FREE)
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  currentPeriodEnd     DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum MembershipTier {
+  FREE
+  PRO
+}
+
+// Connects a creator to their Stripe Connect account so they can receive payouts.
+model SellerAccount {
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  stripeAccountId       String   @unique
+  payoutsEnabled        Boolean  @default(false)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// --- Modules -------------------------------------------------------------
+
+model Module {
+  id              String     @id @default(cuid())
+  ownerId         String
+  title           String
+  slug            String     @unique
+  description     String
+  category        String
+  visibility      Visibility @default(PRIVATE)
+  priceCents      Int        @default(0)
+  currency        String     @default("usd")
+  isTemplate      Boolean    @default(false)
+  forkedFromId    String?
+  publishedVersionId String? @unique
+  draftGraph      Json       @default("{\"nodes\":[],\"edges\":[]}")
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  owner            User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  forkedFrom       Module?         @relation("ModuleForks", fields: [forkedFromId], references: [id], onDelete: SetNull)
+  forks            Module[]        @relation("ModuleForks")
+  versions         ModuleVersion[] @relation("ModuleVersions")
+  publishedVersion ModuleVersion?  @relation("PublishedVersion", fields: [publishedVersionId], references: [id], onDelete: SetNull)
+  runs             Run[]
+  acquisitions     Acquisition[]
+  reviews          Review[]
+
+  @@index([ownerId])
+  @@index([visibility, category])
+}
+
+enum Visibility {
+  PRIVATE
+  UNLISTED
+  PUBLISHED
+}
+
+// Immutable snapshot of a module's node/edge graph. A new version is created
+// every time a draft is published.
+model ModuleVersion {
+  id         String   @id @default(cuid())
+  moduleId   String
+  version    Int
+  graph      Json
+  changelog  String?
+  createdAt  DateTime @default(now())
+
+  module           Module   @relation("ModuleVersions", fields: [moduleId], references: [id], onDelete: Cascade)
+  publishedFor     Module?  @relation("PublishedVersion")
+  runs             Run[]
+  acquisitions     Acquisition[]
+
+  @@unique([moduleId, version])
+}
+
+// Grants a user access to run/fork a module, whether acquired for free or purchased.
+model Acquisition {
+  id                    String   @id @default(cuid())
+  userId                String
+  moduleId              String
+  moduleVersionId       String
+  priceCentsPaid        Int      @default(0)
+  platformFeeCents      Int      @default(0)
+  sellerEarningsCents   Int      @default(0)
+  stripeCheckoutSessionId String?
+  stripePaymentIntentId   String?
+  createdAt             DateTime @default(now())
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  module        Module        @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  moduleVersion ModuleVersion @relation(fields: [moduleVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, moduleId])
+  @@index([moduleId])
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  moduleId  String
+  userId    String
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+
+  module Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([moduleId, userId])
+  @@index([moduleId])
+}
+
+// --- Runs ------------------------------------------------------------------
+
+model Run {
+  id              String    @id @default(cuid())
+  userId          String
+  moduleId        String
+  moduleVersionId String
+  status          RunStatus @default(PENDING)
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  module        Module        @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  moduleVersion ModuleVersion @relation(fields: [moduleVersionId], references: [id], onDelete: Cascade)
+  steps         RunStep[]
+
+  @@index([userId])
+  @@index([moduleId])
+}
+
+enum RunStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model RunStep {
+  id            String     @id @default(cuid())
+  runId         String
+  nodeId        String
+  nodeLabel     String
+  provider      AiProvider?
+  model         String?
+  prompt        String?
+  output        String?
+  status        RunStatus  @default(PENDING)
+  errorMessage  String?
+  createdAt     DateTime   @default(now())
+  completedAt   DateTime?
+
+  run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+}

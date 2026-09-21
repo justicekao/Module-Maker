@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE "RunStep" ALTER COLUMN "provider" DROP NOT NULL,
+ALTER COLUMN "model" DROP NOT NULL,
+ALTER COLUMN "prompt" DROP NOT NULL;
