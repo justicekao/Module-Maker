@@ -2,10 +2,20 @@
 
 This app is a standard Next.js 16 app backed by Postgres, so it runs on any
 host that supports Node.js 20.9+ and lets you point it at a Postgres
-database. This guide covers the fastest path (Vercel + a hosted Postgres)
-and a generic path for any other Node host.
+database. This guide covers three paths: Vercel + a hosted Postgres, any
+other Node host, or Prisma Compute (app hosting and the database in one
+place, since the app already uses Prisma).
+
+**All of the commands below need to run from a machine with normal internet
+access** — a laptop, CI runner, etc. They won't work from a sandboxed
+Claude Code session whose network egress is restricted to package
+registries, which is why this is a "run these yourself" guide rather than
+something already done for you.
 
 ## 1. Get a production Postgres database
+
+Skip this section if you're using Prisma Compute (Option C below) — it
+provisions the database as part of the same flow.
 
 Any Postgres provider works — the app connects with a plain connection
 string via `pg`/`@prisma/adapter-pg`, nothing provider-specific. Pick one:
@@ -82,10 +92,56 @@ If you're self-hosting via Docker, add `output: "standalone"` to
 `next.config.ts` first — it produces a minimal, self-contained build
 (this isn't needed for Vercel).
 
+### Option C — Prisma Compute (app hosting + database in one place)
+
+Prisma Compute hosts the app and can provision the production Postgres
+database in the same flow, using the Prisma Platform CLI
+(`@prisma/cli`, distinct from the `prisma` ORM CLI already used for
+migrations).
+
+```bash
+# 1. Authenticate non-interactively with a workspace service token
+#    (Prisma Console -> Workspace Settings -> Service Tokens -> Create).
+#    Interactive `prisma auth login` also works if you're running this
+#    on your own machine with a real browser.
+export PRISMA_SERVICE_TOKEN="<paste your token>"
+bunx @prisma/cli@latest auth whoami --json
+
+# 2. Create a project (skip if you already have one linked)
+bunx @prisma/cli@latest project create module-maker --json
+
+# 3. Create the production database
+bunx @prisma/cli@latest database create main --branch main --json
+#    -> copy the one-time connection string it prints into DATABASE_URL below
+
+# 4. Set production env vars (reads from a local .env.production you create,
+#    or pass each one with `project env add KEY=value --role production`)
+bunx @prisma/cli@latest project env add --file .env.production --role production
+
+# 5. Apply migrations to the new database (uses the ORM CLI + prisma.config.ts)
+DATABASE_URL="<the connection string from step 3>" npx prisma migrate deploy
+
+# 6. Deploy the app
+bunx @prisma/cli@latest app deploy --prod --yes --env .env.production --json
+```
+
+`.env.production` for step 4 should contain the same variables listed in
+the reference table at the bottom of this doc (`DATABASE_URL`,
+`AUTH_SECRET`, `API_KEY_ENCRYPTION_SECRET`, `PLATFORM_FEE_BPS`, and
+`NEXT_PUBLIC_APP_URL` — set that last one once you know the deployed URL
+from step 6, then re-run steps 4 and 6). Treat that file as a secret; it's
+already covered by `.gitignore`'s `.env*` pattern, so don't rename it to
+something that pattern won't catch.
+
+If a database limit or an existing project gets in the way, `project
+list --json` and `database list --json` show what's already there.
+
 ## 4. Run migrations against the production database
 
-Do this once after the database exists and again after any future schema
-change. Run it from your machine (or a CI step), pointed at production:
+Already covered inline in Option C's step 5 — skip this section if you
+went that route. Otherwise, do this once after the database exists and
+again after any future schema change. Run it from your machine (or a CI
+step), pointed at production:
 
 ```bash
 DATABASE_URL="<your production connection string>" npx prisma migrate deploy
